@@ -4,13 +4,16 @@
 ## Prerequisites
 
 - Create a Cloud9 IDE, thats where we will be running all of these steps.
-- Existing EKS Cluster
-- helm v3 is installed
-- 
+- Install [kubectl](https://kubernetes.io/docs/tasks/tools/install-kubectl-linux/#install-kubectl-binary-with-curl-on-linux)
+- Install [eksctl](https://docs.aws.amazon.com/eks/latest/userguide/eksctl.html)
+- Install/Upgrade [AWS CLI](https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html) to version 2
+
 
 ### Install helm CLI
 
-Before we can get started configuring Helm, we’ll need to first install the command line tools that you will interact with. To do this, run the following:
+Helm is a package manager for Kubernetes that packages multiple Kubernetes resources into a single logical deployment unit called a Chart. Charts are easy to create, version, share, and publish.
+
+We’ll install the command line tools that you will interact with to get started on helm.
 
 ```sh
 # install the command line tools
@@ -32,15 +35,30 @@ git clone https://github.com/black-mirror-1/eks-autoscaling-custom-metrics.git
 cd eks-autoscaling-custom-metrics/using-keda-with-prometheus-metrics
 ```
 
-### Install [Metrics Server](https://github.com/kubernetes-sigs/metrics-server)
+### Create an EKS cluster
 
+Create an EKS cluster in `us-east-2` with a fargate profile for `kube-system` to install the EKS add-ons `vpc-cni`, `coredns` and `kube-proxy` and a managed nodegroup.
+
+```sh
+eksctl create cluster -f eks-cluster/eksctl-config.yaml
+```
+
+The cluster can take about 10-15 min. Lets test if we are able to connect to the cluster.
+
+```sh
+kubectl get nodes
+```
+
+### Install Metrics Server
+
+[Metrics Server](https://github.com/kubernetes-sigs/metrics-server) is a scalable, efficient source of container resource metrics for Kubernetes built-in autoscaling pipelines using metrics such as CPU/Memeory. We will extend the capability to scale based on customer metrics using KEDA Operater.
 ```sh
 kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml
 ```
 
 ### Deploy Prometheus
 
-Prometheus is an open-source systems monitoring and alerting toolkit originally built at SoundCloud. Since its inception in 2012, many companies and organizations have adopted Prometheus, and the project has a very active developer and user community. It is now a standalone open source project and maintained independently of any company. Prometheus joined the Cloud Native Computing Foundation in 2016 as the second hosted project, after Kubernetes.
+[Prometheus](https://prometheus.io/) is an open-source systems monitoring and alerting toolkit originally built at SoundCloud. We will use prometheus to monitor our sample application and use a http metric from prometheus to scale the application.
 
 
 ```sh
@@ -65,46 +83,37 @@ helm install prometheus prometheus-community/prometheus \
 Check if Prometheus components deployed as expected
 
 ```sh
-kubectl get all -n prometheus
+kubectl get deploy,ds -n prometheus
 ```
 
 ```
-
-NAME                                                 READY   STATUS    RESTARTS   AGE
-pod/prometheus-alertmanager-868f8db8c4-67j2x         2/2     Running   0          78s
-pod/prometheus-kube-state-metrics-6df5d44568-c4tkn   1/1     Running   0          78s
-pod/prometheus-node-exporter-dh6f4                   1/1     Running   0          78s
-pod/prometheus-node-exporter-v8rd8                   1/1     Running   0          78s
-pod/prometheus-node-exporter-vcbjq                   1/1     Running   0          78s
-pod/prometheus-pushgateway-759689fbc6-hvjjm          1/1     Running   0          78s
-pod/prometheus-server-546c64d959-qxbzd               2/2     Running   0          78s
-
-NAME                                    TYPE        CLUSTER-IP       EXTERNAL-IP   PORT(S)    AGE
-service/prometheus-alertmanager         ClusterIP   10.100.38.47     <none>        80/TCP     78s
-service/prometheus-kube-state-metrics   ClusterIP   10.100.165.139   <none>        8080/TCP   78s
-service/prometheus-node-exporter        ClusterIP   None             <none>        9100/TCP   78s
-service/prometheus-pushgateway          ClusterIP   10.100.150.237   <none>        9091/TCP   78s
-service/prometheus-server               ClusterIP   10.100.209.224   <none>        80/TCP     78s
+NAME                                            READY   UP-TO-DATE   AVAILABLE   AGE
+deployment.apps/prometheus-alertmanager         1/1     1            1           4m38s
+deployment.apps/prometheus-kube-state-metrics   1/1     1            1           4m38s
+deployment.apps/prometheus-pushgateway          1/1     1            1           4m38s
+deployment.apps/prometheus-server               1/1     1            1           4m38s
 
 NAME                                      DESIRED   CURRENT   READY   UP-TO-DATE   AVAILABLE   NODE SELECTOR   AGE
-daemonset.apps/prometheus-node-exporter   3         3         3       3            3           <none>          78s
+daemonset.apps/prometheus-node-exporter   2         2         2       2            2           <none>          4m38s
 
-NAME                                            READY   UP-TO-DATE   AVAILABLE   AGE
-deployment.apps/prometheus-alertmanager         1/1     1            1           78s
-deployment.apps/prometheus-kube-state-metrics   1/1     1            1           78s
-deployment.apps/prometheus-pushgateway          1/1     1            1           78s
-deployment.apps/prometheus-server               1/1     1            1           78s
+```
 
-NAME                                                       DESIRED   CURRENT   READY   AGE
-replicaset.apps/prometheus-alertmanager-868f8db8c4         1         1         1       78s
-replicaset.apps/prometheus-kube-state-metrics-6df5d44568   1         1         1       78s
-replicaset.apps/prometheus-pushgateway-759689fbc6          1         1         1       78s
-replicaset.apps/prometheus-server-546c64d959               1         1         1       78s
+```sh
+#In order to access the Prometheus server URL, we are going to use the kubectl port-forward command to access the application.
+kubectl port-forward -n prometheus deploy/prometheus-server 8080:9090
+```
+
+In your Cloud9 environment, click Tools / Preview / Preview Running Application. Scroll to the end of the URL and append:
+
+```sh
+/targets
 ```
 
 
 
 ## Install KEDA Operator
+
+[KEDA](https://keda.sh/) is a single-purpose and lightweight component that can be added into any Kubernetes cluster. KEDA works alongside standard Kubernetes components like the Horizontal Pod Autoscaler and can extend functionality without overwriting or duplication
 
 ```sh
 # add helm repo for keda
@@ -131,41 +140,28 @@ keda-operator-metrics-apiserver-fc6df469f-vlf9r   1/1     Running   0          4
 
 ## Deploy sample application podinfo
 
-We will deploy a sample application [podinfo](https://github.com/stefanprodan/podinfo), is a tiny web application made with Go that showcases best practices of running microservices in Kubernetes.
+We will deploy a sample application [podinfo](https://github.com/stefanprodan/podinfo), a tiny web application made with Go that showcases best practices of running microservices in Kubernetes.
 
 In this example, we are deploying the application on fargate, lets create a fargate profile
 
 ```sh
-eksctl create fargateprofile --namespace podinfo-fp --cluster <cluster-name> --region <region>
+eksctl create fargateprofile podinfo-profile --namespace podinfo-fp --cluster eks-demo --region us-east-2
 ```
 
 ```sh
-kubectl apply -f ../podinfo
+kubectl apply -f ../podinfo/deployment.yaml
 
-# validate if all the resources are deployed
-kubectl get all -n podinfo-fp
+# validate if the deployment is ready
+kubectl get deploy -n podinfo-fp
 ```
 
 
 ```
-NAME                          READY   STATUS    RESTARTS   AGE
-pod/podinfo-d4d9484cc-xllmm   1/1     Running   0          13h
-
-NAME              TYPE        CLUSTER-IP      EXTERNAL-IP   PORT(S)   AGE
-service/podinfo   ClusterIP   10.100.154.25   <none>        80/TCP    13h
-
-NAME                      READY   UP-TO-DATE   AVAILABLE   AGE
-deployment.apps/podinfo   1/1     1            1           13h
-
-NAME                                DESIRED   CURRENT   READY   AGE
-replicaset.apps/podinfo-d4d9484cc   1         1         1       13h
-
-NAME                                                       REFERENCE            TARGETS     MINPODS   MAXPODS   REPLICAS   AGE
-horizontalpodautoscaler.autoscaling/keda-hpa-podinfo-hpa   Deployment/podinfo   0/1 (avg)   1         10        1          99m
+NAME      READY   UP-TO-DATE   AVAILABLE   AGE
+podinfo   1/1     1            1           89s        99m
 ```
 
 We annotated the podinfo application to scrape the prometheus metrics, lets validate if the targets are being scraped.
-
 
 ```sh
 #In order to access the Prometheus server URL, we are going to use the kubectl port-forward command to access the application.
@@ -178,7 +174,8 @@ In your Cloud9 environment, click Tools / Preview / Preview Running Application.
 /targets
 ```
 
-![](media/prometheus-targets.png)
+![](/media/prometheus-targets.png)
+
 
 
 ## Setup KEDA ScaledObject
@@ -214,7 +211,7 @@ spec:
         serverAddress: http://prometheus-server.prometheus
         threshold: '1'
         # Note: query must return a vector/scalar single element response
-        query: sum(rate(http_requests_total{namespace="podinfo-fp",pod="podinfo-d4d9484cc-xllmm"}[2m]))
+        query: sum(rate(http_requests_total{app="podinfo"}[2m]))
         metricName: http_requests_total_per_second
 ```
 
@@ -235,7 +232,7 @@ Lets exec into loadtester and generate some load
 
 ```sh
 # You can exec into the loadtester pod with the following command
-kubectl -n demo exec -it loadtester-xxxx-xxxx
+kubectl exec -i -t $(kubectl get po -l app=loadtester --output=jsonpath={.items..metadata.name}) -- sh
 
 # generate additional traffic using hey as shown below
 hey -z 10m -c 5 -q 5 -disable-keepalive http://podinfo.podinfo-fp
@@ -259,3 +256,20 @@ Events:
 
 ## Cleanup
 
+```sh
+helm uninstall flagger-loadtester
+helm uninstall prometheus -n prometheus
+helm uninstall keda -n keda 
+
+# KEDA ScaledObject 
+kubectl delete -f keda-operater/podinfo-scaledobject.yaml
+
+# podinfo sample-app
+kubectl delete -f ../podinfo/deployment.yaml
+
+# Metrics Server
+kubectl delete -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml
+
+# delete the EKS cluster
+eksctl delete cluster --name=eks-demo --region us-east-2
+```

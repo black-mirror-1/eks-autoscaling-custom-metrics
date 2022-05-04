@@ -22,6 +22,6 @@ spec:
         serverAddress: http://prometheus-server.prometheus
         threshold: '1'
         # Note: query must return a vector/scalar single element response
-        query: sum(rate(http_requests_total{namespace="podinfo-fp",pod="podinfo-d4d9484cc-xllmm"}[2m]))
+        query: sum(rate(http_requests_total{app="podinfo"}[2m]))
         metricName: http_requests_total_per_second
 ---
